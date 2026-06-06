@@ -49,9 +49,11 @@ async function startServer() {
   try {
     // 1. Connect to MongoDB
     console.log('Connecting to MongoDB...');
-    const mongoUri = process.env.MONGO_URL || process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/spotify_clone';
-    await mongoose.connect(mongoUri);
-    console.log('MongoDB successfully connected.');
+    // DO NOT hardcode the string in your code.
+    // Use process.env to read from Render's Environment settings.
+    await mongoose.connect(process.env.MONGO_URL)
+      .then(() => console.log("Connected to MongoDB!"))
+      .catch((err) => console.error("Connection failed:", err));
 
     // Seed featured playlists
     const { seedFeaturedPlaylists } = require('./utils/seeder');
