@@ -1,0 +1,24 @@
+{
+  "name": "spotify-clone-backend",
+  "version": "1.0.0",
+  "description": "Backend API for Spotify Clone piping YouTube audio streams",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^8.3.1",
+    "youtubei.js": "^17.0.1",
+    "yt-search": "^2.10.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
