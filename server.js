@@ -49,7 +49,7 @@ async function startServer() {
   try {
     // 1. Connect to MongoDB
     console.log('Connecting to MongoDB...');
-    const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/spotify_clone';
+    const mongoUri = process.env.MONGO_URL || process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/spotify_clone';
     await mongoose.connect(mongoUri);
     console.log('MongoDB successfully connected.');
 
