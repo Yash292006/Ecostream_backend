@@ -1,129 +1,109 @@
 const express = require('express');
-const { Readable } = require('stream');
 const router = express.Router();
+const axios = require('axios');
 
-// In-memory cache for resolved format information to prevent API rate limiting & socket hang-ups
-const formatCache = new Map();
-const CACHE_TTL = 30 * 60 * 1000; // 30 minutes TTL (YouTube URLs expire in 6 hours)
+/**
+ * Helper function to pipe the audio stream to the client or return the URL as JSON.
+ */
+const pipeStream = async (req, res, streamUrl) => {
+  console.log(`[Stream] Resolved streamUrl successfully: ${streamUrl}`);
 
-// Route: GET /api/stream/:videoId
-router.get('/:videoId', async (req, res) => {
+  // If the request accepts JSON, send JSON. Otherwise, proxy the audio stream directly.
+  if (req.headers.accept && req.headers.accept.includes('application/json')) {
+    return res.json({ streamUrl: streamUrl });
+  } else {
+    console.log(`[Stream] Proxying audio stream from: ${streamUrl}`);
+    const audioResponse = await axios({
+      method: 'get',
+      url: streamUrl,
+      responseType: 'stream',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+      }
+    });
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    if (audioResponse.headers['content-length']) {
+      res.setHeader('Content-Length', audioResponse.headers['content-length']);
+    }
+    audioResponse.data.pipe(res);
+    return;
+  }
+};
+
+const handleStream = async (req, res) => {
   const { videoId } = req.params;
+  const fullYoutubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-  if (!videoId || videoId.trim() === '') {
-    return res.status(400).json({ error: 'Video ID parameter is required.' });
-  }
+  console.log(`[Stream] Request received for videoId: ${videoId}`);
 
+  // 1. Try Provider 1 (youtube-mp310)
   try {
-    const yt = req.app.get('yt');
-    if (!yt) {
-      return res.status(500).json({ error: 'YouTube client is not initialized.' });
-    }
+    console.log(`[Stream] Trying Provider 1 (youtube-mp310)...`);
+    const response = await axios.get('https://youtube-mp310.p.rapidapi.com/download/mp3', {
+      params: { url: fullYoutubeUrl },
+      headers: {
+        'x-rapidapi-host': 'youtube-mp310.p.rapidapi.com',
+        'x-rapidapi-key': process.env.RAPIDAPI_KEY
+      },
+      timeout: 6000
+    });
 
-    let format = null;
-    const cached = formatCache.get(videoId);
-    
-    if (cached && cached.expiresAt > Date.now()) {
-      format = cached.format;
-      console.log(`[Cache Hit] Using cached stream format for videoId: ${videoId}`);
-    } else {
-      console.log(`[Cache Miss] Resolving streaming data for videoId: ${videoId}...`);
-      format = await yt.getStreamingData(videoId, {
-        type: 'audio',
-        quality: 'best',
-        client: 'ANDROID_VR'
+    const streamUrl = response.data.downloadUrl || response.data.url || response.data;
+    if (streamUrl && typeof streamUrl === 'string') {
+      return await pipeStream(req, res, streamUrl);
+    }
+    throw new Error('Invalid download URL returned from Provider 1');
+  } catch (error1) {
+    console.warn(`[Stream] Provider 1 failed (${error1.message}). Trying Provider 2 (youtube-mp36)...`);
+
+    // 2. Try Provider 2 (youtube-mp36 - offers 100 free daily conversions)
+    try {
+      const response = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {
+        params: { id: videoId },
+        headers: {
+          'x-rapidapi-host': 'youtube-mp36.p.rapidapi.com',
+          'x-rapidapi-key': process.env.RAPIDAPI_KEY
+        },
+        timeout: 6000
       });
 
-      if (format && format.url) {
-        formatCache.set(videoId, {
-          format,
-          expiresAt: Date.now() + CACHE_TTL
+      const streamUrl = response.data.link;
+      if (streamUrl && typeof streamUrl === 'string') {
+        return await pipeStream(req, res, streamUrl);
+      }
+      throw new Error('Invalid download URL returned from Provider 2');
+    } catch (error2) {
+      console.warn(`[Stream] Provider 2 failed (${error2.message}). Trying Provider 3 (youtube-to-mp3-download)...`);
+
+      // 3. Try Provider 3 (youtube-to-mp3-download)
+      try {
+        const response = await axios.get('https://youtube-to-mp3-download.p.rapidapi.com/download', {
+          params: { url: fullYoutubeUrl },
+          headers: {
+            'x-rapidapi-host': 'youtube-to-mp3-download.p.rapidapi.com',
+            'x-rapidapi-key': process.env.RAPIDAPI_KEY
+          },
+          timeout: 6000
         });
-      }
-    }
 
-    if (!format || !format.url) {
-      return res.status(500).json({ error: 'Failed to retrieve streaming URL from YouTube.' });
-    }
-
-    const streamUrl = format.url;
-    const contentLength = format.content_length;
-    const contentType = format.mime_type || 'audio/mpeg';
-
-    // Parse the browser's Range request
-    const rangeHeader = req.headers.range;
-    if (rangeHeader) {
-      const parts = rangeHeader.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : contentLength - 1;
-
-      // Limit response chunk size to 1MB to keep buffering snappy and reduce memory/network overhead
-      const maxChunkSize = 1024 * 1024; // 1MB
-      const actualEnd = Math.min(end, start + maxChunkSize - 1);
-      const chunksize = (actualEnd - start) + 1;
-
-      console.log(`Proxying Range request for videoId ${videoId}: bytes=${start}-${actualEnd}/${contentLength} (${chunksize} bytes)`);
-
-      const response = await fetch(streamUrl, {
-        headers: {
-          'Range': `bytes=${start}-${actualEnd}`,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        const streamUrl = response.data.downloadUrl || response.data.url;
+        if (streamUrl && typeof streamUrl === 'string') {
+          return await pipeStream(req, res, streamUrl);
         }
-      });
-
-      if (!response.ok && response.status !== 206) {
-        throw new Error(`YouTube responded with status ${response.status}`);
+        throw new Error('Invalid download URL returned from Provider 3');
+      } catch (error3) {
+        console.error('[Stream] All streaming providers failed:', error3.message);
+        return res.status(500).json({ error: "Failed to fetch audio stream. All providers exhausted." });
       }
-
-      res.writeHead(206, {
-        'Content-Range': `bytes ${start}-${actualEnd}/${contentLength}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize,
-        'Content-Type': contentType
-      });
-
-      const nodeStream = Readable.fromWeb(response.body);
-      nodeStream.pipe(res);
-
-      req.on('close', () => {
-        nodeStream.destroy();
-      });
-
-    } else {
-      console.log(`No range header for videoId ${videoId}, proxying full file stream...`);
-      const response = await fetch(streamUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error(`YouTube responded with status ${response.status}`);
-      }
-
-      res.writeHead(200, {
-        'Content-Length': contentLength,
-        'Content-Type': contentType,
-        'Accept-Ranges': 'bytes'
-      });
-
-      const nodeStream = Readable.fromWeb(response.body);
-      nodeStream.pipe(res);
-
-      req.on('close', () => {
-        nodeStream.destroy();
-      });
-    }
-
-  } catch (error) {
-    console.error(`Error streaming videoId ${videoId}:`, error);
-    if (!res.headersSent) {
-      res.status(500).json({ 
-        error: 'Failed to retrieve audio stream.', 
-        details: error.message 
-      });
     }
   }
-});
+};
+
+// Route: GET /api/stream/:videoId (standard)
+router.get('/:videoId', handleStream);
+
+// Route: GET /api/stream/stream/:videoId (fallback matching example snippet)
+router.get('/stream/:videoId', handleStream);
 
 module.exports = router;
